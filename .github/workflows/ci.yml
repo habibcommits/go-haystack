@@ -1,59 +1,58 @@
-name: CI
+name: Build ESP32-C3 Tracker
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-
-permissions:
-  contents: read
+  workflow_dispatch:
 
 jobs:
-  test:
-    name: test ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: ubuntu-latest, packages: ./...}
-          - {os: windows-latest, packages: ./...}
-          # The firmware package advertises, which the bluetooth package does not
-          # do on CoreBluetooth, so macOS only gets the other packages.
-          - {os: macos-latest, packages: . ./cmd/... ./lib/...}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.x'
-          cache: true
-      - run: go build ${{ matrix.packages }}
-      - run: go vet ${{ matrix.packages }}
-      - run: go test ${{ matrix.packages }}
-
-  tinygo:
-    name: tinygo ${{ matrix.target }}
+  build:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/tinygo-org/tinygo-dev
-      options: --user root
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {dir: ./firmware, target: xiao-ble}
-          - {dir: ./firmware, target: nicenano}
-          - {dir: ./firmware, target: feather-nrf52840}
-          - {dir: ./firmware, target: xiao-esp32c3}
-          - {dir: ./firmware, target: xiao-esp32s3}
-          - {dir: ./firmware, target: m5stamp-c3}
-          - {dir: ./firmware, target: pico-w}
-          - {dir: ./tinyscan, target: badger2040-w, flags: -stack-size 8kb}
-          - {dir: ./tinyscan, target: clue, flags: -stack-size 8kb}
-          - {dir: ./tinyscan, target: pybadge, flags: -stack-size 8kb}
-          - {dir: ./tinyscan, target: pyportal, flags: -stack-size 8kb}
     steps:
-      - uses: actions/checkout@v7
-      - run: tinygo version
-      - run: go env -w GOFLAGS=-buildvcs=false
-      - run: tinygo build -o /dev/null -size short ${{ matrix.flags }} -target=${{ matrix.target }} ${{ matrix.dir }}
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Python & esptool
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install esptool & TinyGo
+        run: |
+          pip install esptool
+          wget https://github.com/tinygo-org/tinygo/releases/download/v0.33.0/tinygo_0.33.0_amd64.deb
+          sudo dpkg -i tinygo_0.33.0_amd64.deb
+
+      - name: Install Haystack CLI
+        run: |
+          go install github.com/hybridgroup/go-haystack/cmd/haystack@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Generate Keys and Compile Firmware
+        run: |
+          mkdir -p output
+          cd output
+          
+          # Generate OpenHaystack advertisement keys and JSON configuration
+          haystack keys CD70_TRACKER
+          
+          # Read public key from generated JSON
+          PUBKEY=$(grep -o '"public_key": "[^"]*' CD70_TRACKER.json | cut -d'"' -f4)
+          echo "Generated Public Key: $PUBKEY"
+          
+          # Compile the ESP32-C3 firmware using TinyGo
+          cd ..
+          tinygo build -target=esp32c3-supermini -ldflags="-X main.AdvertisementKey=$PUBKEY" -o output/firmware.bin ./cmd/firmware/esp32/
+          
+          # Merge bootloader, partitions, and app into a single flashable 0x0 binary
+          cd output
+          esptool --chip esp32c3 merge-bin -o CD70_ESP32C3_merged.bin --pad-to-size 4MB 0x0 firmware.bin
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CD70_TRACKER_FILES
+          path: output/
