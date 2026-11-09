@@ -31,15 +31,25 @@ jobs:
           go install github.com/hybridgroup/go-haystack/cmd/haystack@latest
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Generate Keys and Build Firmware
+      - name: Generate Keys and Compile Firmware
         run: |
           mkdir -p output
           cd output
-          haystack keys CD70_TRACKER
-          haystack build -target=esp32c3-supermini CD70_TRACKER.json -o firmware.bin
           
-          # Merge into a single flashable binary starting at offset 0x0
-          esptool.py --chip esp32c3 merge_bin -o CD70_ESP32C3_merged.bin --fill-flash-size 4MB 0x0 firmware.bin
+          # Generate OpenHaystack advertisement keys and JSON configuration
+          haystack keys CD70_TRACKER
+          
+          # Read public key from generated JSON
+          PUBKEY=$(grep -o '"public_key": "[^"]*' CD70_TRACKER.json | cut -d'"' -f4)
+          echo "Generated Public Key: $PUBKEY"
+          
+          # Compile the ESP32-C3 firmware using TinyGo
+          cd ..
+          tinygo build -target=esp32c3-supermini -ldflags="-X main.AdvertisementKey=$PUBKEY" -o output/firmware.bin ./cmd/firmware/esp32/
+          
+          # Merge bootloader, partitions, and app into a single flashable 0x0 binary
+          cd output
+          esptool --chip esp32c3 merge-bin -o CD70_ESP32C3_merged.bin --pad-to-size 4MB 0x0 firmware.bin
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
