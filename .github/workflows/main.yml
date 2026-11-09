@@ -1,0 +1,48 @@
+name: Build ESP32-C3 Tracker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Python & esptool
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install esptool & TinyGo
+        run: |
+          pip install esptool
+          wget https://github.com/tinygo-org/tinygo/releases/download/v0.33.0/tinygo_0.33.0_amd64.deb
+          sudo dpkg -i tinygo_0.33.0_amd64.deb
+
+      - name: Install Haystack CLI
+        run: |
+          go install github.com/hybridgroup/go-haystack/cmd/haystack@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Generate Keys and Build Firmware
+        run: |
+          mkdir -p output
+          cd output
+          haystack keys CD70_TRACKER
+          haystack build -target=esp32c3-supermini CD70_TRACKER.json -o firmware.bin
+          
+          # Merge into a single flashable binary starting at offset 0x0
+          esptool.py --chip esp32c3 merge_bin -o CD70_ESP32C3_merged.bin --fill-flash-size 4MB 0x0 firmware.bin
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CD70_TRACKER_FILES
+          path: output/
